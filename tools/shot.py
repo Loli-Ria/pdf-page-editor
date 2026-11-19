@@ -1,0 +1,90 @@
+# -*- coding: utf-8 -*-
+"""离屏截图：不碰桌面，把窗口直接 grab 成 PNG，用来检查界面。
+
+用法：python tools/shot.py [宽] [高] [输出名]
+"""
+
+from __future__ import annotations
+
+import os
+import sys
+import tempfile
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+ROOT = os.path.dirname(HERE)
+sys.path.insert(0, os.path.join(ROOT, "src"))
+
+import pymupdf
+from PIL import Image, ImageDraw
+from PySide6.QtCore import QTimer
+from PySide6.QtWidgets import QApplication
+
+from pdf_editor.app import RESOURCES
+from pdf_editor.ui import theme
+from pdf_editor.ui.main_window import MainWindow
+
+OUT = os.path.join(ROOT, "docs", "screenshots")
+
+
+def make_pdf(path: str, n: int, tag: str) -> None:
+    doc = pymupdf.open()
+    for i in range(n):
+        page = doc.new_page(width=595, height=842)
+        page.draw_rect(pymupdf.Rect(40, 40, 555, 802), color=(0.85, 0.2, 0.2), width=2)
+        page.insert_text((70, 120), f"{tag} - Page {i + 1}", fontsize=26)
+        page.insert_text((70, 170), "PDF 页数编辑器 / 多文件导入验证", fontsize=14)
+    doc.save(path)
+    doc.close()
+
+
+def make_img(path: str, size: tuple[int, int], color, tag: str) -> None:
+    im = Image.new("RGB", size, color)
+    d = ImageDraw.Draw(im)
+    d.rectangle([16, 16, size[0] - 16, size[1] - 16], outline=(30, 40, 60), width=6)
+    d.text((40, 40), tag, fill=(20, 30, 50))
+    im.save(path)
+
+
+def main() -> None:
+    w = int(sys.argv[1]) if len(sys.argv) > 1 else 1400
+    h = int(sys.argv[2]) if len(sys.argv) > 2 else 900
+    name = sys.argv[3] if len(sys.argv) > 3 else "split"
+
+    tmp = tempfile.mkdtemp(prefix="pdfshot_")
+    p1 = os.path.join(tmp, "扫描全能王 2026-11-18.pdf")
+    p2 = os.path.join(tmp, "颜荡桥处置补充材料.pdf")
+    make_pdf(p1, 23, "SCAN")
+    make_pdf(p2, 6, "SUPP")
+    i1 = os.path.join(tmp, "现场照片_东侧.jpg")
+    i2 = os.path.join(tmp, "现场照片_西侧.jpg")
+    make_img(i1, (1200, 1600), (200, 220, 255), "PHOTO EAST")
+    make_img(i2, (1600, 1200), (255, 232, 205), "PHOTO WEST")
+
+    os.makedirs(OUT, exist_ok=True)
+    app = QApplication(sys.argv[:1])
+    theme.set_resource_dir(RESOURCES)
+    app.setStyleSheet(theme.app_qss())
+
+    win = MainWindow()
+    win.resize(w, h)
+    win.show()
+    if "merge" in name:
+        win.seg.set_current(1)
+        win.stack.setCurrentIndex(1)
+        win.merge_page._add_paths([p1, i1, p2])
+    else:
+        win.split_page.add_sources([p1, p2, i1, i2])
+
+    def shoot() -> None:
+        path = os.path.join(OUT, f"{name}.png")
+        win.grab().save(path)
+        print("saved:", path)
+        win.close()
+        app.quit()
+
+    QTimer.singleShot(2600, shoot)
+    app.exec()
+
+
+if __name__ == "__main__":
+    main()
