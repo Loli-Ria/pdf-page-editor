@@ -54,19 +54,12 @@
 | --- | --- |
 | ![拆分](docs/screenshots/split.png) | ![合并](docs/screenshots/merge.png) |
 
-窗口缩到最小（1080×690）时，工具行自动折行、右侧栏出现滚动条，文字不会被压住：
-
-![小窗口](docs/screenshots/small.png)
-
 ## 快速开始
 
 ### 方式一：直接用打包好的 exe（推荐给普通用户）
 
 1. 打开 [Releases](https://github.com/Loli-Ria/pdf-page-editor/releases/latest)，下载 `PDF-Page-Editor-v2.0.0-win64.zip`。
 2. 解压到任意目录，双击 `PDF页数编辑器.exe`。
-
-> 源码里不含 exe——二进制文件一旦提交，仓库会永久变大，所以成品统一放在 Releases。
-> 解压后请保留 `_internal` 文件夹，它必须和 exe 待在同一目录，单独拖走 exe 是打不开的。
 
 > 单文件 exe 在部分 Windows 环境下会报 `Could not create temporary directory!`（临时目录解压失败），
 > 因此发布包统一使用 **onedir** 形式，启动也更快。
