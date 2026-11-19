@@ -72,6 +72,14 @@ def main() -> None:
         win.seg.set_current(1)
         win.stack.setCurrentIndex(1)
         win.merge_page._add_paths([p1, i1, p2])
+    elif "many" in name:
+        # 压测：一次导入 14 个文件，看标签区是否还老实待在两行以内
+        extra = []
+        for k in range(12):
+            path = os.path.join(tmp, f"材料{k + 1:02d}_扫描件.pdf")
+            make_pdf(path, 2, f"M{k + 1:02d}")
+            extra.append(path)
+        win.split_page.add_sources(extra + [i1, i2])
     else:
         win.split_page.add_sources([p1, p2, i1, i2])
 

@@ -198,6 +198,8 @@ QScrollBar::add-page:horizontal, QScrollBar::sub-page:horizontal {{ background: 
 
 QScrollArea {{ background: transparent; border: none; }}
 QScrollArea#SidePanel > QWidget > QWidget {{ background: transparent; }}
+QScrollArea#ChipScroll > QWidget > QWidget {{ background: transparent; }}
+QScrollArea#ChipScroll {{ border: none; }}
 QWidget#SideBody {{ background: transparent; }}
 QToolTip {{
     background: #22293A; color: #FFFFFF; border: none;

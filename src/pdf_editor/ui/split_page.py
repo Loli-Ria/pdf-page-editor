@@ -21,6 +21,11 @@ from .preview_panel import PreviewPanel
 
 FILTER = "PDF 和图片 (*.pdf *.jpg *.jpeg *.png *.bmp *.webp *.tif *.tiff *.gif)"
 
+# 源文件标签的尺寸约定：单行高、间距、最多显示几行
+CHIP_H = 30
+CHIP_GAP = 8
+CHIP_ROWS = 2
+
 
 class _SplitWorker(QThread):
     progress = Signal(int, str)
@@ -96,9 +101,18 @@ class SplitPage(QWidget):
         head.addWidget(self.btn_pick)
         sc.addLayout(head)
 
+        # 源文件标签：最多两行，超出的在框内滚动（不抢缩略图的位置）
         self.chip_host = QWidget()
-        self.chip_flow = FlowLayout(self.chip_host, 0, 8, 8)
-        sc.addWidget(self.chip_host)
+        self.chip_flow = FlowLayout(self.chip_host, 0, CHIP_GAP, CHIP_GAP)
+        self.chip_scroll = QScrollArea()
+        self.chip_scroll.setObjectName("ChipScroll")
+        self.chip_scroll.setFrameShape(QFrame.NoFrame)
+        self.chip_scroll.setWidgetResizable(False)
+        self.chip_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.chip_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        self.chip_scroll.setWidget(self.chip_host)
+        self.chip_scroll.setFixedHeight(0)
+        sc.addWidget(self.chip_scroll)
 
         self.src_empty = QLabel("把 PDF 或图片拖进来，可以一次拖多个")
         self.src_empty.setObjectName("Faint")
@@ -418,7 +432,7 @@ class SplitPage(QWidget):
             self.chip_flow.addWidget(chip)
         has = bool(self.sources)
         self.src_empty.setVisible(not has)
-        self.chip_host.setVisible(has)
+        self.chip_scroll.setVisible(has)
         self.src_count.setText(
             f"{len(self.sources)} 个文件 · {len(self.grid.items)} 页" if has
             else "0 个文件 · 0 页")
@@ -429,26 +443,28 @@ class SplitPage(QWidget):
         n = self.chip_flow.count()
         if not self.sources or n == 0:
             self.chip_host.setFixedHeight(0)
+            self.chip_scroll.setFixedHeight(0)
             return
-        avail = self.chip_host.width()
-        if avail < 80:
-            avail = 560
+        # 预留滚动条宽度：这样滚动条出现/消失都不会让标签重新折行
+        avail = self.chip_scroll.width() - 14
+        if avail < 120:
+            avail = 400
         row_w = 0
-        row_h = 0
-        total = 0
+        rows = 1
         for i in range(n):
             w = self.chip_flow.itemAt(i).widget()
             if w is None:
                 continue
             cw = max(w.sizeHint().width(), 60)
-            ch = max(w.sizeHint().height(), 30)
-            if row_w and row_w + 8 + cw > avail:
-                total += row_h + 8
+            if row_w and row_w + CHIP_GAP + cw > avail:
+                rows += 1
                 row_w = 0
-                row_h = 0
-            row_w += (8 if row_w else 0) + cw
-            row_h = max(row_h, ch)
-        self.chip_host.setFixedHeight(total + row_h)
+            row_w += (CHIP_GAP if row_w else 0) + cw
+        full = rows * CHIP_H + (rows - 1) * CHIP_GAP
+        cap = CHIP_ROWS * CHIP_H + (CHIP_ROWS - 1) * CHIP_GAP
+        self.chip_host.setFixedWidth(avail)
+        self.chip_host.setFixedHeight(full)
+        self.chip_scroll.setFixedHeight(min(full, cap))
 
     def _remove_source(self, index: int) -> None:
         if not (0 <= index < len(self.sources)):
