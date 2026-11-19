@@ -65,16 +65,18 @@
 1. 打开 [Releases](https://github.com/Loli-Ria/pdf-page-editor/releases/latest)，下载 `PDF-Page-Editor-v2.0.0-win64.zip`。
 2. 解压到任意目录，双击 `PDF页数编辑器.exe`。
 
-> 仓库源码里**不含 exe**——二进制文件放进 git 会让仓库永久变大。成品统一放在 Releases 里。
-> 解压后 `_internal` 文件夹必须和 exe 待在同一目录，别单独把 exe 拖走。
+> 源码里不含 exe——二进制文件一旦提交，仓库会永久变大，所以成品统一放在 Releases。
+> 解压后请保留 `_internal` 文件夹，它必须和 exe 待在同一目录，单独拖走 exe 是打不开的。
 
-> 单文件 exe 在某些 Windows 环境下会报 `Could not create temporary directory!`（临时目录解压失败），
+> 单文件 exe 在部分 Windows 环境下会报 `Could not create temporary directory!`（临时目录解压失败），
 > 因此发布包统一使用 **onedir** 形式，启动也更快。
 
 ### 方式二：从源码运行
 
+需要 Python 3.9 及以上。
+
 ```bash
-git clone <仓库地址>
+git clone https://github.com/Loli-Ria/pdf-page-editor.git
 cd pdf-page-editor
 pip install -r requirements.txt
 python run.py
