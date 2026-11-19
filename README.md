@@ -62,7 +62,7 @@
 
 ### 方式一：直接用打包好的 exe（推荐给普通用户）
 
-1. 打开 [Releases](https://github.com/melting-snow/pdf-page-editor/releases/latest)，下载 `PDF-Page-Editor-v2.0.0-win64.zip`。
+1. 打开 [Releases](https://github.com/Loli-Ria/pdf-page-editor/releases/latest)，下载 `PDF-Page-Editor-v2.0.0-win64.zip`。
 2. 解压到任意目录，双击 `PDF页数编辑器.exe`。
 
 > 仓库源码里**不含 exe**——二进制文件放进 git 会让仓库永久变大。成品统一放在 Releases 里。
