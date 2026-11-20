@@ -64,20 +64,25 @@ QPushButton#WinBtn:hover {{ background: #EDF0F6; }}
 QPushButton#WinClose {{ border: none; background: transparent; border-radius: 7px; }}
 QPushButton#WinClose:hover {{ background: {DANGER}; }}
 
-/* ---------------- 分段切换 ---------------- */
-QWidget#SegBox {{
-    background: {SURFACE_ALT};
+/* ---------------- 标题栏中间的工作区标识 ---------------- */
+QLabel#PageBadge {{
+    background: {SURFACE};
+    color: {ACCENT};
+    font-weight: 600;
+    font-size: 13px;
     border: 1px solid {BORDER};
-    border-radius: 10px;
+    border-radius: 9px;
+    padding: 0 22px;
 }}
-QPushButton#Seg {{
-    border: none; background: transparent; border-radius: 8px;
-    padding: 7px 18px; color: {TEXT_MUTED}; font-weight: 500;
+
+/* ---------------- 可拖拽分隔条 ---------------- */
+QSplitter#MainSplit::handle:horizontal {{
+    background: transparent;
+    margin: 6px 2px;
 }}
-QPushButton#Seg:hover {{ color: {TEXT}; }}
-QPushButton#Seg:checked {{
-    background: {SURFACE}; color: {ACCENT}; font-weight: 600;
-    border: 1px solid {BORDER};
+QSplitter#MainSplit::handle:horizontal:hover {{
+    background: {ACCENT_SOFT};
+    border-radius: 3px;
 }}
 
 /* ---------------- 卡片 ---------------- */

@@ -23,7 +23,7 @@ from pdf_editor.app import RESOURCES
 from pdf_editor.ui import theme
 from pdf_editor.ui.main_window import MainWindow
 
-OUT = os.path.join(ROOT, "docs", "screenshots")
+OUT = os.path.join(ROOT, "build", "shots")   # 临时截图，不进仓库
 
 
 def make_pdf(path: str, n: int, tag: str) -> None:
@@ -68,10 +68,9 @@ def main() -> None:
     win = MainWindow()
     win.resize(w, h)
     win.show()
-    if "merge" in name:
-        win.seg.set_current(1)
-        win.stack.setCurrentIndex(1)
-        win.merge_page._add_paths([p1, i1, p2])
+    if "wide" in name:
+        # 预览栏拉到最大，检查是否会和缩略图区打架
+        win.split_page.split.setSizes([9999, 1])
     elif "many" in name:
         # 压测：一次导入 14 个文件，看标签区是否还老实待在两行以内
         extra = []

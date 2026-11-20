@@ -9,7 +9,7 @@ from PySide6.QtCore import Qt, QThread, QTimer, Signal
 from PySide6.QtGui import QFont
 from PySide6.QtWidgets import (QCheckBox, QFileDialog, QFrame, QHBoxLayout,
                                QLabel, QLineEdit, QProgressBar, QPushButton,
-                               QScrollArea, QSizePolicy, QSpinBox,
+                               QScrollArea, QSizePolicy, QSpinBox, QSplitter,
                                QStackedWidget, QVBoxLayout, QWidget)
 
 from ..core import engine as E
@@ -25,6 +25,14 @@ FILTER = "PDF 和图片 (*.pdf *.jpg *.jpeg *.png *.bmp *.webp *.tif *.tiff *.gi
 CHIP_H = 30
 CHIP_GAP = 8
 CHIP_ROWS = 2
+
+# 预览栏的宽度约束：拖拽时不能挤死中间的缩略图区
+PREVIEW_MIN = 260
+PREVIEW_DEFAULT = 360
+PREVIEW_MAX = 620
+PREVIEW_RATIO = 0.46      # 最多占可用宽度的比例
+LEFT_MIN = 380            # 中间缩略图区的最小宽度
+SIDE_W = 344              # 右侧参数面板固定宽度
 
 
 class _SplitWorker(QThread):
@@ -183,13 +191,25 @@ class SplitPage(QWidget):
         self.stack.addWidget(self.scroll)
         left.addWidget(self.stack, 1)
 
-        # ---------------- 最左：大预览
+        # ---------------- 最左：大预览（宽度可拖拽调整，有上下限）
         self.preview = PreviewPanel()
-        self.preview.setFixedWidth(360)
+        self.preview.setMinimumWidth(PREVIEW_MIN)
         self.preview.clear()
-        root.addWidget(self.preview)
 
-        root.addLayout(left, 1)
+        left_host = QWidget()
+        left_host.setLayout(left)
+        left_host.setMinimumWidth(LEFT_MIN)
+
+        self.split = QSplitter(Qt.Horizontal)
+        self.split.setObjectName("MainSplit")
+        self.split.setChildrenCollapsible(False)
+        self.split.setHandleWidth(10)
+        self.split.addWidget(self.preview)
+        self.split.addWidget(left_host)
+        self.split.setStretchFactor(0, 0)
+        self.split.setStretchFactor(1, 1)
+        self.split.setSizes([PREVIEW_DEFAULT, 900])
+        root.addWidget(self.split, 1)
 
         # ---------------- 右：参数面板（内容可滚动，窗口变小时不会互相压住）
         side = SidePanel(344)
@@ -305,6 +325,8 @@ class SplitPage(QWidget):
         self.grid.currentChanged.connect(lambda _i: self._refresh_preview())
         self.grid.orderChanged.connect(self._refresh_preview)
         self.grid.requestToast.connect(lambda t: self.toast.emit(t, "info"))
+
+        QTimer.singleShot(0, self._resize_preview)
 
     # ------------------------------------------------------------------ 预览
     def _refresh_preview(self) -> None:
@@ -487,11 +509,23 @@ class SplitPage(QWidget):
         self._resize_preview()
 
     def _resize_preview(self) -> None:
-        """窗口窄的时候把预览栏收一点，给缩略图留位置。"""
-        w = self.width()
-        target = 360 if w >= 1300 else (300 if w >= 1150 else 264)
-        if self.preview.width() != target:
-            self.preview.setFixedWidth(target)
+        """预览栏宽度可拖拽，但要夹在上下限内，不能把中间缩略图区挤没。"""
+        total = self.split.width()
+        if total < 240:
+            return
+        handle = self.split.handleWidth()
+        cap = max(PREVIEW_MIN, min(PREVIEW_MAX, int(total * PREVIEW_RATIO)))
+        cap = min(cap, max(PREVIEW_MIN, total - LEFT_MIN - handle))
+        self.preview.setMaximumWidth(cap)
+
+        sizes = self.split.sizes()
+        if not sizes or len(sizes) < 2:
+            return
+        cur = sizes[0]
+        if cur > cap:
+            self.split.setSizes([cap, max(LEFT_MIN, total - cap - handle)])
+        elif cur < PREVIEW_MIN:
+            self.split.setSizes([PREVIEW_MIN, max(LEFT_MIN, total - PREVIEW_MIN - handle)])
 
     def _relayout_tools(self) -> None:
         """工具行用 FlowLayout 自动换行，需要手动把高度撑到实际行数。"""

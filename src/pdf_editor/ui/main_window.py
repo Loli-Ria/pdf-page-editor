@@ -1,17 +1,15 @@
 # -*- coding: utf-8 -*-
-"""主窗口：标题栏 + 模式切换 + 两个工作页 + 浮层提示。"""
+"""主窗口：标题栏 + 页面编辑区 + 浮层提示。"""
 
 from __future__ import annotations
 
 from PySide6.QtCore import QEasingCurve, QPropertyAnimation, Qt, QTimer
-from PySide6.QtGui import QColor, QFont, QPainter, QPainterPath, QPen
-from PySide6.QtWidgets import (QFrame, QGraphicsOpacityEffect, QLabel,
-                               QStackedWidget, QVBoxLayout, QWidget)
+from PySide6.QtGui import QFont
+from PySide6.QtWidgets import (QGraphicsOpacityEffect, QLabel, QVBoxLayout,
+                               QWidget)
 
-from . import theme
-from .widgets import FramelessWindow, SegmentedControl, TitleBar
-from .merge_page import MergePage
 from .split_page import SplitPage
+from .widgets import FramelessWindow, TitleBar
 
 
 class Toast(QLabel):
@@ -106,24 +104,20 @@ class MainWindow(FramelessWindow):
         self.titlebar = TitleBar("PDF 页数编辑器")
         outer.addWidget(self.titlebar)
 
-        self.seg = SegmentedControl(["拆分 PDF", "合并文件"])
-        self.seg.setFixedWidth(230)
+        # 只有一个工作区，标题栏中间放一枚静态标识（不再是可切换的标签）
+        self.badge = QLabel("页面编辑")
+        self.badge.setObjectName("PageBadge")
+        self.badge.setAlignment(Qt.AlignCenter)
+        self.badge.setFixedHeight(32)
         host = self.titlebar.center_host.layout()
         host.addStretch(1)
-        host.addWidget(self.seg)
+        host.addWidget(self.badge)
         host.addStretch(1)
 
-        self.stack = QStackedWidget()
         self.split_page = SplitPage()
-        self.merge_page = MergePage()
-        self.stack.addWidget(self.split_page)
-        self.stack.addWidget(self.merge_page)
-        outer.addWidget(self.stack, 1)
+        outer.addWidget(self.split_page, 1)
 
-        self.seg.changed.connect(self.stack.setCurrentIndex)
         self.split_page.toast.connect(self._toast)
-        self.merge_page.toast.connect(self._toast)
-
         self.toast = Toast(self)
 
     def _toast(self, text: str, kind: str = "info") -> None:
@@ -131,25 +125,13 @@ class MainWindow(FramelessWindow):
 
     # -------------------------------------------------------------- 整窗拖放
     def dragEnterEvent(self, event) -> None:  # noqa: N802
-        page = self.stack.currentWidget()
-        if page is not None and hasattr(page, "dragEnterEvent"):
-            page.dragEnterEvent(event)
-        else:
-            super().dragEnterEvent(event)
+        self.split_page.dragEnterEvent(event)
 
     def dragMoveEvent(self, event) -> None:  # noqa: N802
-        page = self.stack.currentWidget()
-        if page is not None and hasattr(page, "dragMoveEvent"):
-            page.dragMoveEvent(event)
-        else:
-            super().dragMoveEvent(event)
+        self.split_page.dragMoveEvent(event)
 
     def dropEvent(self, event) -> None:  # noqa: N802
-        page = self.stack.currentWidget()
-        if page is not None and hasattr(page, "dropEvent"):
-            page.dropEvent(event)
-        else:
-            super().dropEvent(event)
+        self.split_page.dropEvent(event)
 
     def resizeEvent(self, event) -> None:  # noqa: N802
         super().resizeEvent(event)

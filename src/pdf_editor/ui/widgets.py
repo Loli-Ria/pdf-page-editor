@@ -189,44 +189,6 @@ class TitleBar(QWidget):
 
 
 # --------------------------------------------------------------------------
-# 分段控件
-# --------------------------------------------------------------------------
-
-class SegmentedControl(QWidget):
-    changed = Signal(int)
-
-    def __init__(self, labels: list[str], parent: QWidget | None = None) -> None:
-        super().__init__(parent)
-        self.setObjectName("SegBox")
-        lay = QHBoxLayout(self)
-        lay.setContentsMargins(3, 3, 3, 3)
-        lay.setSpacing(2)
-        self.buttons: list[QPushButton] = []
-        for i, text in enumerate(labels):
-            b = QPushButton(text)
-            b.setObjectName("Seg")
-            b.setCheckable(True)
-            b.setCursor(Qt.PointingHandCursor)
-            b.clicked.connect(lambda _=False, idx=i: self.set_current(idx, emit=True))
-            lay.addWidget(b)
-            self.buttons.append(b)
-        if self.buttons:
-            self.buttons[0].setChecked(True)
-
-    def set_current(self, index: int, emit: bool = False) -> None:
-        for i, b in enumerate(self.buttons):
-            b.setChecked(i == index)
-        if emit:
-            self.changed.emit(index)
-
-    def current(self) -> int:
-        for i, b in enumerate(self.buttons):
-            if b.isChecked():
-                return i
-        return 0
-
-
-# --------------------------------------------------------------------------
 # 单选卡片
 # --------------------------------------------------------------------------
 
