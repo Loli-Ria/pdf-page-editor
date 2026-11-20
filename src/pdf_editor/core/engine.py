@@ -9,11 +9,15 @@ from __future__ import annotations
 import io
 import os
 import re
+import shutil
+import tempfile
 from dataclasses import dataclass
 from typing import Callable, Sequence
 
 import pymupdf
 from PIL import Image, ImageOps
+
+from . import annotate
 
 A4_W, A4_H = pymupdf.paper_size("a4")  # 595.0 x 842.0
 
@@ -176,9 +180,17 @@ def render_ref_png(sources: Sequence[Source], ref: PageRef,
     try:
         if ref.rotation:
             im = im.rotate(-ref.rotation, expand=True)
-        im.thumbnail((max_side, max_side), Image.LANCZOS)
+        # 图片导出时会被放进 A4 白底页，预览也照这个来，批注位置才对得上
+        w = max(1, int(round(max_side * A4_W / A4_H)))
+        h = max(1, int(max_side))
+        canvas = Image.new("RGB", (w, h), (255, 255, 255))
+        thumb = im.copy()
+        thumb.thumbnail((w, h), Image.LANCZOS)
+        canvas.paste(thumb, ((w - thumb.width) // 2, (h - thumb.height) // 2))
+        thumb.close()
         buf = io.BytesIO()
-        im.save(buf, "PNG")
+        canvas.save(buf, "PNG")
+        canvas.close()
         return buf.getvalue()
     finally:
         im.close()
@@ -197,7 +209,8 @@ def _write_pages(src_doc: pymupdf.Document, refs: Sequence[PageRef], out_path: s
 
 
 def _write_refs(sources: Sequence[Source], refs: Sequence[PageRef],
-                out_path: str) -> None:
+                out_path: str, marks: "Marks | None" = None,
+                notes: dict | None = None) -> None:
     """把若干跨文件的 PageRef 写进一个新 PDF。"""
     dst = pymupdf.open()
     cache: dict[str, pymupdf.Document] = {}
@@ -215,8 +228,10 @@ def _write_refs(sources: Sequence[Source], refs: Sequence[PageRef],
                     page.set_rotation((page.rotation + ref.rotation) % 360)
             else:
                 _append_image_page(dst, src.path, "a4", 200, ref.rotation)
+            _draw_notes(dst[-1], (notes or {}).get((ref.src, ref.index)))
         if dst.page_count == 0:
             raise PdfError("结果里没有任何页面。")
+        _apply_marks(dst, marks)
         dst.save(out_path, garbage=3, deflate=True)
     finally:
         for doc in cache.values():
@@ -233,13 +248,19 @@ def export_pages(sources: Sequence[Source],
                  out_dir: str,
                  prefix: str,
                  group_size: int = 3,
-                 progress: ProgressFn | None = None) -> list[str]:
+                 progress: ProgressFn | None = None,
+                 marks: "Marks | None" = None,
+                 notes: dict | None = None,
+                 tile: str = "none",
+                 per_page: int = 2) -> list[str]:
     """从多个来源（PDF / 图片）里挑选页面，按 mode 导出。
 
     mode:
       each    每个选中页 → 一个 PDF 文件
       single  所有选中页 → 合并成一个 PDF 文件
       every_n 每 N 页 → 一个 PDF 文件
+    tile:
+      none 原样输出；h 每 per_page 页左右并排；v 每 per_page 页上下堆叠
     """
     if not sources:
         raise PdfError("还没有导入任何文件。")
@@ -248,18 +269,25 @@ def export_pages(sources: Sequence[Source],
     prefix = safe_filename(prefix)
     os.makedirs(out_dir, exist_ok=True)
     created: list[str] = []
+    tile = tile if tile in ("h", "v") else "none"
+
+    def emit(group: Sequence[PageRef], out: str) -> None:
+        if tile == "none":
+            _write_refs(sources, group, out, marks=marks, notes=notes)
+        else:
+            _write_tiled(sources, group, out, tile, per_page, marks, notes)
 
     if mode == "each":
         total = len(refs)
         width = max(3, len(str(total)))
         for i, ref in enumerate(refs):
             out = unique_path(out_dir, f"{prefix}_{str(i + 1).zfill(width)}")
-            _write_refs(sources, [ref], out)
+            emit([ref], out)
             created.append(out)
             _report(progress, (i + 1) * 100 // total, f"正在导出 {i + 1}/{total}")
     elif mode == "single":
         out = unique_path(out_dir, prefix)
-        _write_refs(sources, refs, out)
+        emit(refs, out)
         created.append(out)
         _report(progress, 100, "已合并为 1 个文件")
     elif mode == "every_n":
@@ -269,7 +297,7 @@ def export_pages(sources: Sequence[Source],
         width = max(2, len(str(total)))
         for gi, group in enumerate(groups):
             out = unique_path(out_dir, f"{prefix}_{str(gi + 1).zfill(width)}")
-            _write_refs(sources, group, out)
+            emit(group, out)
             created.append(out)
             _report(progress, (gi + 1) * 100 // total,
                     f"正在导出第 {gi + 1}/{total} 组")
@@ -418,3 +446,252 @@ def estimate_pages(items: Sequence[MergeItem]) -> int:
         else:
             total += 1
     return total
+
+
+# --------------------------------------------------------------------------
+# 页码 / 水印
+# --------------------------------------------------------------------------
+
+@dataclass
+class Marks:
+    """页码与文字水印的设置，导出时叠加到每一页。"""
+
+    page_numbers: bool = False
+    number_format: str = "{n} / {total}"
+    number_pos: str = "bottom-center"   # bottom-center / bottom-right / bottom-left
+    number_size: float = 10.0
+    number_color: str = "#6C7688"
+    watermark: str = ""
+    watermark_size: float = 46.0
+    watermark_color: str = "#1A2030"
+    watermark_opacity: float = 0.10
+
+    def active(self) -> bool:
+        return self.page_numbers or bool(self.watermark.strip())
+
+
+def _apply_marks(doc: pymupdf.Document, marks: Marks | None) -> None:
+    """在文档每一页写上页码 / 水印。"""
+    if not marks or not marks.active():
+        return
+    total = doc.page_count
+    for i, page in enumerate(doc):
+        r = page.rect
+        if marks.watermark.strip():
+            page.insert_textbox(
+                r, marks.watermark,
+                fontname="china-s", fontsize=marks.watermark_size,
+                color=annotate.hex_to_rgb(marks.watermark_color),
+                fill_opacity=marks.watermark_opacity,
+                align=pymupdf.TEXT_ALIGN_CENTER,
+                rotate=0, overlay=True,
+            )
+        if marks.page_numbers:
+            text = (marks.number_format
+                    .replace("{n}", str(i + 1))
+                    .replace("{total}", str(total)))
+            size = marks.number_size
+            band = min(36.0, r.height * 0.06)
+            if marks.number_pos == "bottom-right":
+                rect = pymupdf.Rect(r.x1 - 220, r.y1 - band, r.x1 - 24, r.y1 - 6)
+                align = pymupdf.TEXT_ALIGN_RIGHT
+            elif marks.number_pos == "bottom-left":
+                rect = pymupdf.Rect(r.x0 + 24, r.y1 - band, r.x0 + 220, r.y1 - 6)
+                align = pymupdf.TEXT_ALIGN_LEFT
+            else:
+                rect = pymupdf.Rect(r.x0 + 24, r.y1 - band, r.x1 - 24, r.y1 - 6)
+                align = pymupdf.TEXT_ALIGN_CENTER
+            page.insert_textbox(rect, text, fontname="china-s", fontsize=size,
+                                color=annotate.hex_to_rgb(marks.number_color),
+                                align=align, overlay=True)
+
+
+def _draw_notes(page: pymupdf.Page, notes: Sequence[object] | None) -> None:
+    """把这一页的手绘笔迹与文字贴上去。"""
+    if not notes:
+        return
+    strokes = [n for n in notes if isinstance(n, annotate.InkStroke)]
+    texts = [n for n in notes if isinstance(n, annotate.TextMark)]
+    annotate.draw_strokes(page, strokes)
+    annotate.draw_texts(page, texts)
+
+
+# --------------------------------------------------------------------------
+# 拼接（两页并成一页）
+# --------------------------------------------------------------------------
+
+TILE_GAP = 6.0
+IMAGE_DPI_ASSUMED = 200.0
+
+
+def _ref_size(sources: Sequence[Source], ref: PageRef,
+              cache: dict[str, pymupdf.Document] | None = None) -> tuple[float, float]:
+    """一页在 PDF 里应占的宽高（point），已考虑旋转。"""
+    src = sources[ref.src]
+    if src.kind == "pdf":
+        doc = None
+        if cache is not None:
+            doc = cache.get(src.path)
+        if doc is None:
+            doc = open_pdf(src.path)
+            if cache is not None:
+                cache[src.path] = doc
+        r = doc[ref.index].rect
+        w, h = r.width, r.height
+    else:
+        pw, ph = image_info(src.path)
+        w, h = pw * 72.0 / IMAGE_DPI_ASSUMED, ph * 72.0 / IMAGE_DPI_ASSUMED
+    if ref.rotation % 180:
+        w, h = h, w
+    return w, h
+
+
+def _place_ref(dst: pymupdf.Document, page: pymupdf.Page, rect: pymupdf.Rect,
+               sources: Sequence[Source], ref: PageRef,
+               cache: dict[str, pymupdf.Document]) -> None:
+    """把一页内容摆到 rect 里。"""
+    src = sources[ref.src]
+    if src.kind == "pdf":
+        doc = cache.get(src.path)
+        if doc is None:
+            doc = open_pdf(src.path)
+            cache[src.path] = doc
+        page.show_pdf_page(rect, doc, ref.index, keep_proportion=True,
+                           rotate=ref.rotation % 360, overlay=True)
+    else:
+        page.insert_image(rect, filename=src.path, keep_proportion=True,
+                          rotate=ref.rotation % 360, overlay=True)
+
+
+def _write_tiled(sources: Sequence[Source], refs: Sequence[PageRef], out_path: str,
+                 direction: str, per_page: int, marks: Marks | None,
+                 notes: dict | None) -> None:
+    """每 per_page 页拼成一张：h=左右并排，v=上下堆叠。"""
+    dst = pymupdf.open()
+    cache: dict[str, pymupdf.Document] = {}
+    step = max(1, int(per_page))
+    try:
+        for start in range(0, len(refs), step):
+            chunk = list(refs[start:start + step])
+            sizes = [_ref_size(sources, r, cache) for r in chunk]
+            if direction == "h":
+                w = sum(s[0] for s in sizes) + TILE_GAP * (len(chunk) - 1)
+                h = max(s[1] for s in sizes)
+            else:
+                w = max(s[0] for s in sizes)
+                h = sum(s[1] for s in sizes) + TILE_GAP * (len(chunk) - 1)
+            page = dst.new_page(width=w, height=h)
+            x = y = 0.0
+            for ref, (pw, ph) in zip(chunk, sizes):
+                rect = pymupdf.Rect(x, y, x + pw, y + ph)
+                _place_ref(dst, page, rect, sources, ref, cache)
+                _draw_notes(page, (notes or {}).get((ref.src, ref.index)))
+                if direction == "h":
+                    x += pw + TILE_GAP
+                else:
+                    y += ph + TILE_GAP
+        _apply_marks(dst, marks)
+        if dst.page_count == 0:
+            raise PdfError("结果里没有任何页面。")
+        dst.save(out_path, garbage=3, deflate=True)
+    finally:
+        for doc in cache.values():
+            try:
+                doc.close()
+            except Exception:  # noqa: BLE001
+                pass
+        dst.close()
+
+
+# --------------------------------------------------------------------------
+# 压缩
+# --------------------------------------------------------------------------
+
+def compress_pdf(src_path: str, out_path: str, mode: str = "lossless",
+                 dpi: int = 150, quality: int = 70,
+                 progress: ProgressFn | None = None) -> tuple[str, int, int]:
+    """压缩 PDF。返回 (输出路径, 原大小, 新大小)。
+
+    mode="lossless" 只做无损清理；mode="raster" 把每页重新采样成 JPEG（明显变小，文字不再可选中）。
+    """
+    if not os.path.exists(src_path):
+        raise PdfError("文件不存在。")
+    before = os.path.getsize(src_path)
+    doc = open_pdf(src_path)
+    try:
+        if mode == "raster":
+            out = pymupdf.open()
+            try:
+                total = doc.page_count
+                for i, page in enumerate(doc):
+                    pix = page.get_pixmap(dpi=max(36, int(dpi)))
+                    img = Image.open(io.BytesIO(pix.tobytes("png"))).convert("RGB")
+                    buf = io.BytesIO()
+                    img.save(buf, format="JPEG", quality=int(quality), optimize=True)
+                    buf.seek(0)
+                    new_page = out.new_page(width=page.rect.width, height=page.rect.height)
+                    new_page.insert_image(new_page.rect, stream=buf.getvalue())
+                    _report(progress, (i + 1) * 100 // max(1, total),
+                            f"正在压缩 {i + 1}/{total}")
+                out.save(out_path, garbage=4, deflate=True, clean=True)
+            finally:
+                out.close()
+        else:
+            _report(progress, 40, "正在清理无用对象")
+            doc.save(out_path, garbage=4, deflate=True, clean=True)
+            _report(progress, 100, "完成")
+    finally:
+        doc.close()
+    after = os.path.getsize(out_path)
+    return out_path, before, after
+
+
+# --------------------------------------------------------------------------
+# 导出为图片
+# --------------------------------------------------------------------------
+
+def export_images(sources: Sequence[Source],
+                  refs: Sequence[PageRef],
+                  out_dir: str,
+                  prefix: str,
+                  fmt: str = "png",
+                  dpi: int = 150,
+                  quality: int = 90,
+                  marks: Marks | None = None,
+                  notes: dict | None = None,
+                  progress: ProgressFn | None = None) -> list[str]:
+    """把选中的页逐页导出成 PNG / JPG。"""
+    if not sources:
+        raise PdfError("还没有导入任何文件。")
+    if not refs:
+        raise PdfError("还没有选中任何页面。")
+    fmt = "jpg" if str(fmt).lower() in ("jpg", "jpeg") else "png"
+    prefix = safe_filename(prefix)
+    os.makedirs(out_dir, exist_ok=True)
+    created: list[str] = []
+    total = len(refs)
+    width = max(3, len(str(total)))
+    tmp_dir = tempfile.mkdtemp(prefix="pdfimg_")
+    try:
+        for i, ref in enumerate(refs):
+            one = os.path.join(tmp_dir, f"p{i}.pdf")
+            _write_refs(sources, [ref], one, marks=marks, notes=notes)
+            doc = open_pdf(one)
+            try:
+                page = doc[0]
+                pix = page.get_pixmap(dpi=max(36, int(dpi)))
+                img = Image.open(io.BytesIO(pix.tobytes("png")))
+                out = unique_path(out_dir, f"{prefix}_{str(i + 1).zfill(width)}",
+                                  "." + fmt)
+                if fmt == "jpg":
+                    img.convert("RGB").save(out, format="JPEG",
+                                            quality=int(quality), optimize=True)
+                else:
+                    img.save(out, format="PNG", optimize=True)
+            finally:
+                doc.close()
+            created.append(out)
+            _report(progress, (i + 1) * 100 // total, f"正在导出 {i + 1}/{total}")
+    finally:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+    return created

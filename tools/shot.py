@@ -20,6 +20,7 @@ from PySide6.QtCore import QTimer
 from PySide6.QtWidgets import QApplication
 
 from pdf_editor.app import RESOURCES
+from pdf_editor.core import annotate
 from pdf_editor.ui import theme
 from pdf_editor.ui.main_window import MainWindow
 
@@ -71,6 +72,22 @@ def main() -> None:
     if "wide" in name:
         # 预览栏拉到最大，检查是否会和缩略图区打架
         win.split_page.split.setSizes([9999, 1])
+    elif "note" in name:
+        # 批注 + 附加处理全部展开，检查排版
+        sp = win.split_page
+        sp.add_sources([p1, p2, i1, i2])
+        sp.notes[(0, 0)] = [
+            annotate.InkStroke([(0.22, 0.30), (0.40, 0.33), (0.58, 0.28),
+                                (0.66, 0.40), (0.52, 0.46)],
+                               "#E5484D", 8.0),
+            annotate.TextMark(0.22, 0.52, "这里要改一下", "#4F6BFF", "黑体", 0.05),
+        ]
+        sp.chk_num.setChecked(True)
+        sp.chk_wm.setChecked(True)
+        sp.wm_edit.setText("内部资料")
+        sp.tile_box.setCurrentIndex(1)
+        sp.chk_zip.setChecked(True)
+        QTimer.singleShot(1200, sp._refresh_preview)
     elif "many" in name:
         # 压测：一次导入 14 个文件，看标签区是否还老实待在两行以内
         extra = []

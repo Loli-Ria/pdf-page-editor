@@ -6,12 +6,13 @@ from __future__ import annotations
 import os
 
 from PySide6.QtCore import Qt, QThread, QTimer, Signal
-from PySide6.QtGui import QFont
-from PySide6.QtWidgets import (QCheckBox, QFileDialog, QFrame, QHBoxLayout,
-                               QLabel, QLineEdit, QProgressBar, QPushButton,
-                               QScrollArea, QSizePolicy, QSpinBox, QSplitter,
-                               QStackedWidget, QVBoxLayout, QWidget)
+from PySide6.QtGui import QFont, QKeySequence, QShortcut
+from PySide6.QtWidgets import (QCheckBox, QComboBox, QFileDialog, QFrame,
+                               QHBoxLayout, QLabel, QLineEdit, QProgressBar,
+                               QPushButton, QScrollArea, QSizePolicy, QSpinBox,
+                               QSplitter, QStackedWidget, QVBoxLayout, QWidget)
 
+from ..core import annotate
 from ..core import engine as E
 from . import theme
 from .widgets import (DropZone, FileChip, FlowLayout, RadioCardGroup, SidePanel,
@@ -41,7 +42,10 @@ class _SplitWorker(QThread):
     err = Signal(str)
 
     def __init__(self, sources, refs, mode: str, out_dir: str,
-                 prefix: str, group_size: int) -> None:
+                 prefix: str, group_size: int, fmt: str = "pdf",
+                 dpi: int = 150, quality: int = 90, marks=None, notes=None,
+                 tile: str = "none", per_page: int = 2,
+                 compress: tuple | None = None) -> None:
         super().__init__()
         self.sources = list(sources)
         self.refs = refs
@@ -49,12 +53,41 @@ class _SplitWorker(QThread):
         self.out_dir = out_dir
         self.prefix = prefix
         self.group_size = group_size
+        self.fmt = fmt
+        self.dpi = dpi
+        self.quality = quality
+        self.marks = marks
+        self.notes = notes
+        self.tile = tile
+        self.per_page = per_page
+        self.compress = compress
 
     def run(self) -> None:
         try:
-            files = E.export_pages(self.sources, self.refs, self.mode,
-                                   self.out_dir, self.prefix, self.group_size,
-                                   self.progress.emit)
+            if self.fmt in ("png", "jpg"):
+                files = E.export_images(self.sources, self.refs, self.out_dir,
+                                        self.prefix, fmt=self.fmt, dpi=self.dpi,
+                                        quality=self.quality, marks=self.marks,
+                                        notes=self.notes,
+                                        progress=self.progress.emit)
+            else:
+                files = E.export_pages(self.sources, self.refs, self.mode,
+                                       self.out_dir, self.prefix, self.group_size,
+                                       self.progress.emit, marks=self.marks,
+                                       notes=self.notes, tile=self.tile,
+                                       per_page=self.per_page)
+            if self.compress:
+                mode, dpi, quality = self.compress
+                total = len(files)
+                for i, f in enumerate(files):
+                    self.progress.emit(int(i * 100 / max(1, total)), "正在压缩…")
+                    tmp = f + ".tmp.pdf"
+                    try:
+                        E.compress_pdf(f, tmp, mode, dpi, quality)
+                        os.replace(tmp, f)
+                    except Exception:  # noqa: BLE001
+                        if os.path.exists(tmp):
+                            os.remove(tmp)
             self.ok.emit(files)
         except Exception as exc:  # noqa: BLE001
             self.err.emit(str(exc))
@@ -74,9 +107,15 @@ class SplitPage(QWidget):
         self.sources: list[E.Source] = []
         self._worker: _SplitWorker | None = None
         self._last_out = ""
+        # 批注草稿：(源序号, 页序号) → [InkStroke | TextMark]
+        self.notes: dict[tuple[int, int], list] = {}
+        self._undo_stack: list[tuple[tuple[int, int], object]] = []
         self.setAcceptDrops(True)
         self._build()
         self._refresh_state()
+        sc = QShortcut(QKeySequence("Ctrl+Z"), self)
+        sc.setContext(Qt.WidgetWithChildrenShortcut)
+        sc.activated.connect(self._undo_note)
 
     # ------------------------------------------------------------------ UI
     def _build(self) -> None:
@@ -246,6 +285,85 @@ class SplitPage(QWidget):
             lambda i: self.n_row.setVisible(i == 2))
         rv.addWidget(card1)
 
+        # ---- 附加处理：导出格式 / 页码 / 水印 / 拼接 / 压缩
+        card1b = QFrame()
+        card1b.setObjectName("Card")
+        cb = QVBoxLayout(card1b)
+        cb.setContentsMargins(16, 14, 16, 16)
+        cb.setSpacing(9)
+        cb.addWidget(_section_label("附加处理"))
+
+        row_fmt = QHBoxLayout()
+        row_fmt.setSpacing(8)
+        row_fmt.addWidget(QLabel("导出为"))
+        self.fmt_box = QComboBox()
+        self.fmt_box.addItems(["PDF 文件", "PNG 图片", "JPG 图片"])
+        row_fmt.addWidget(self.fmt_box, 1)
+        self.dpi_spin = QSpinBox()
+        self.dpi_spin.setRange(72, 600)
+        self.dpi_spin.setValue(150)
+        self.dpi_spin.setSuffix(" dpi")
+        self.dpi_spin.setFixedWidth(96)
+        row_fmt.addWidget(self.dpi_spin)
+        cb.addLayout(row_fmt)
+
+        self.chk_num = QCheckBox("加页码")
+        cb.addWidget(self.chk_num)
+        self.num_edit = QLineEdit("{n} / {total}")
+        self.num_edit.setToolTip("{n} 是当前页，{total} 是总页数")
+        self.num_edit.setVisible(False)
+        cb.addWidget(self.num_edit)
+
+        self.chk_wm = QCheckBox("加文字水印")
+        cb.addWidget(self.chk_wm)
+        self.wm_edit = QLineEdit()
+        self.wm_edit.setPlaceholderText("例如 内部资料")
+        self.wm_edit.setVisible(False)
+        cb.addWidget(self.wm_edit)
+
+        row_tile = QHBoxLayout()
+        row_tile.setSpacing(8)
+        row_tile.addWidget(QLabel("拼接"))
+        self.tile_box = QComboBox()
+        self.tile_box.addItems(["不拼接", "左右并排", "上下堆叠"])
+        row_tile.addWidget(self.tile_box, 1)
+        self.per_spin = QSpinBox()
+        self.per_spin.setRange(2, 8)
+        self.per_spin.setValue(2)
+        self.per_spin.setFixedWidth(64)
+        self.per_spin.setSuffix(" 页")
+        self.per_spin.setToolTip("每张拼几页")
+        self.per_spin.setVisible(False)
+        row_tile.addWidget(self.per_spin)
+        cb.addLayout(row_tile)
+
+        self.chk_zip = QCheckBox("压缩输出")
+        cb.addWidget(self.chk_zip)
+        self.zip_row = QWidget()
+        zr = QHBoxLayout(self.zip_row)
+        zr.setContentsMargins(0, 0, 0, 0)
+        zr.setSpacing(8)
+        self.zip_box = QComboBox()
+        self.zip_box.addItems(["无损清理", "重新采样（更小）"])
+        zr.addWidget(self.zip_box, 1)
+        self.zip_q = QSpinBox()
+        self.zip_q.setRange(30, 95)
+        self.zip_q.setValue(70)
+        self.zip_q.setFixedWidth(64)
+        self.zip_q.setToolTip("JPEG 质量（越小体积越小）")
+        zr.addWidget(self.zip_q)
+        self.zip_row.setVisible(False)
+        cb.addWidget(self.zip_row)
+
+        self.fmt_box.currentIndexChanged.connect(self._sync_extra)
+        self.zip_box.currentIndexChanged.connect(self._sync_extra)
+        self.chk_num.toggled.connect(self.num_edit.setVisible)
+        self.chk_wm.toggled.connect(self.wm_edit.setVisible)
+        self.tile_box.currentIndexChanged.connect(
+            lambda i: self.per_spin.setVisible(i > 0))
+        self.chk_zip.toggled.connect(self._sync_extra)
+        rv.addWidget(card1b)
+
         card2 = QFrame()
         card2.setObjectName("Card")
         c2 = QVBoxLayout(card2)
@@ -283,11 +401,12 @@ class SplitPage(QWidget):
             ("Ctrl+A", "全选所有页"),
             ("Delete", "移除当前页"),
             ("拖动", "调整页面顺序"),
+            ("Ctrl+Z", "撤销预览里的批注"),
         ]))
 
         rv.addStretch(1)
 
-        self.run_btn = QPushButton("开始拆分")
+        self.run_btn = QPushButton("开始导出")
         self.run_btn.setObjectName("Primary")
         self.run_btn.setMinimumHeight(46)
         self.run_btn.setCursor(Qt.PointingHandCursor)
@@ -325,23 +444,103 @@ class SplitPage(QWidget):
         self.grid.currentChanged.connect(lambda _i: self._refresh_preview())
         self.grid.orderChanged.connect(self._refresh_preview)
         self.grid.requestToast.connect(lambda t: self.toast.emit(t, "info"))
+        self.preview.inkAdded.connect(self._on_ink)
+        self.preview.textAdded.connect(self._on_text)
+        self.preview.undoRequested.connect(self._undo_note)
+        self.preview.notesCleared.connect(self._clear_notes)
 
         QTimer.singleShot(0, self._resize_preview)
+        QTimer.singleShot(0, self._sync_extra)
 
     # ------------------------------------------------------------------ 预览
+    def _current_key(self) -> tuple[int, int] | None:
+        item = self.grid.current_item()
+        if item is None:
+            return None
+        return (item.src, item.index)
+
     def _refresh_preview(self) -> None:
         item = self.grid.current_item()
         if item is None or not self.sources:
             self.preview.clear()
             return
-        self.preview.show_ref(self.sources, E.PageRef(item.src, item.index,
-                                                      item.rotation))
+        key = (item.src, item.index)
+        self.preview.show_ref(self.sources,
+                              E.PageRef(item.src, item.index, item.rotation),
+                              self.notes.get(key))
+
+    # ------------------------------------------------------------------ 批注
+    def _on_ink(self, points: list) -> None:
+        key = self._current_key()
+        if key is None:
+            return
+        color, width = self.preview.pen_style()
+        note = annotate.InkStroke([(float(x), float(y)) for x, y in points],
+                                  color, width)
+        self.notes.setdefault(key, []).append(note)
+        self._undo_stack.append((key, note))
+        self.preview.refresh_notes(self.notes.get(key))
+
+    def _on_text(self, x: float, y: float, text: str) -> None:
+        key = self._current_key()
+        if key is None:
+            return
+        color, font, size = self.preview.text_style()
+        note = annotate.TextMark(x, y, text, color, font, size)
+        self.notes.setdefault(key, []).append(note)
+        self._undo_stack.append((key, note))
+        self.preview.refresh_notes(self.notes.get(key))
+
+    def _undo_note(self) -> None:
+        if not self._undo_stack:
+            self.toast.emit("没有可撤销的批注了", "info")
+            return
+        key, note = self._undo_stack.pop()
+        bucket = self.notes.get(key)
+        if bucket:
+            for i in range(len(bucket) - 1, -1, -1):
+                if bucket[i] is note:
+                    bucket.pop(i)
+                    break
+            if not bucket:
+                self.notes.pop(key, None)
+        if self._current_key() == key:
+            self.preview.refresh_notes(self.notes.get(key))
+
+    def _clear_notes(self) -> None:
+        key = self._current_key()
+        if key is None:
+            return
+        if not self.notes.get(key):
+            return
+        self.notes.pop(key, None)
+        self._undo_stack = [u for u in self._undo_stack if u[0] != key]
+        self.preview.refresh_notes(None)
+        self.toast.emit("已清空本页批注", "info")
+
+    def _sync_extra(self) -> None:
+        """按当前选择显示 / 隐藏附加选项，避免面板太长。"""
+        is_img = self.fmt_box.currentIndex() > 0
+        raster = self.chk_zip.isChecked() and self.zip_box.currentIndex() == 1
+        self.dpi_spin.setVisible(is_img or raster)
+        self.chk_zip.setVisible(not is_img)
+        if is_img:
+            self.chk_zip.setChecked(False)
+        self.zip_row.setVisible(self.chk_zip.isChecked())
+        if is_img:
+            self.prefix_hint.setText("图片模式会自动加 _001、_002 …")
+        else:
+            self.prefix_hint.setText("每页模式会自动加 _001、_002 …")
 
     def _rotate(self) -> None:
         self.grid.rotate_current(90)
         self._refresh_preview()
 
     def _delete_current(self) -> None:
+        key = self._current_key()
+        if key is not None:
+            self.notes.pop(key, None)
+            self._undo_stack = [u for u in self._undo_stack if u[0] != key]
         self.grid.delete_current()
         self._refresh_preview()
 
@@ -565,12 +764,28 @@ class SplitPage(QWidget):
             return
         prefix = self.prefix_edit.text().strip() or "output"
         mode = ["each", "single", "every_n"][self.mode_group.current_index()]
+        fmt = ["pdf", "png", "jpg"][self.fmt_box.currentIndex()]
+        tile = ["none", "h", "v"][self.tile_box.currentIndex()]
+        marks = E.Marks(
+            page_numbers=self.chk_num.isChecked(),
+            number_format=self.num_edit.text().strip() or "{n} / {total}",
+            watermark=self.wm_edit.text().strip() if self.chk_wm.isChecked() else "",
+        )
+        compress = None
+        if self.chk_zip.isChecked() and fmt == "pdf":
+            compress = ("raster" if self.zip_box.currentIndex() == 1 else "lossless",
+                        self.dpi_spin.value(), self.zip_q.value())
 
         self._set_busy(True)
         self.progress.setValue(0)
         self.status.setText("准备中…")
         self._worker = _SplitWorker(self.sources, refs, mode, out_dir, prefix,
-                                    self.n_spin.value())
+                                    self.n_spin.value(), fmt=fmt,
+                                    dpi=self.dpi_spin.value(),
+                                    quality=self.zip_q.value(), marks=marks,
+                                    notes=dict(self.notes), tile=tile,
+                                    per_page=self.per_spin.value(),
+                                    compress=compress)
         self._worker.progress.connect(self._on_progress)
         self._worker.ok.connect(self._on_ok)
         self._worker.err.connect(self._on_err)
@@ -578,7 +793,7 @@ class SplitPage(QWidget):
         self._worker.start()
 
     def _set_busy(self, busy: bool) -> None:
-        self.run_btn.setText("正在拆分…" if busy else "开始拆分")
+        self.run_btn.setText("正在导出…" if busy else "开始导出")
         self._refresh_state()
 
     def _on_progress(self, pct: int, msg: str) -> None:

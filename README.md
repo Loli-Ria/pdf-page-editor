@@ -32,6 +32,19 @@
 - **页面操作**：勾选 / 取消、转 90°、删除、拖动重排，支持全选、反选、清空。
 - **左侧大图预览**：点哪页看哪页，支持滚轮缩放、拖动平移、适应窗口；预览栏和缩略图区之间可以直接拖拽分隔条调宽窄，最宽约占窗口一半。
 - **缩略图尺寸可调**：`－ / ＋` 两档缩放，页数多的时候更省地方。
+- **在预览上批注**：画笔和文字两个工具，颜色、笔迹粗细都能换，文字可选微软雅黑 / 宋体 / 黑体 / 楷体 / 仿宋。批注只作为草稿留在内存里，导出时才合成进页面；`Ctrl + Z` 逐笔撤销。
+
+### 附加处理
+
+导出前在右侧勾选，对这一次的输出统一生效：
+
+| 选项 | 说明 |
+| --- | --- |
+| 导出为 | PDF 文件 / PNG 图片 / JPG 图片（图片可设 dpi） |
+| 加页码 | 每页写页码，格式可改：`{n}` 当前页，`{total}` 总页数 |
+| 加文字水印 | 居中淡色大字，例如"内部资料" |
+| 拼接 | 不拼接 / 左右并排 / 上下堆叠，可设每张拼几页 |
+| 压缩输出 | 无损清理，或重新采样成 JPEG（体积更小，文字不再可选中） |
 
 ### 界面
 
@@ -43,6 +56,10 @@
 ## 截图
 
 ![页面编辑](docs/screenshots/split.png)
+
+在预览上写批注，右侧顺手勾上页码、水印、拼接、压缩：
+
+![批注与附加处理](docs/screenshots/note.png)
 
 ## 快速开始
 
@@ -88,6 +105,7 @@ python -m pdf_editor
 | `空格` | 勾选 / 取消当前页 |
 | `Ctrl + A` | 全选所有页 |
 | `Delete` | 移除当前页 |
+| `Ctrl + Z` | 撤销预览里的批注 |
 | 鼠标拖动 | 调整页面顺序 |
 
 ## 项目结构
@@ -101,16 +119,19 @@ pdf-page-editor/
 │   ├── app.py                 # QApplication 装配、资源路径、样式
 │   ├── __main__.py            # python -m pdf_editor
 │   ├── core/
-│   │   └── engine.py          # PDF 引擎：页面池 / 导出 / 渲染（不依赖 Qt）
+│   │   ├── engine.py          # PDF 引擎：页面池 / 导出 / 拼接 / 压缩（不依赖 Qt）
+│   │   └── annotate.py        # 批注草稿：笔迹与文字，导出时合成
 │   ├── ui/
 │   │   ├── theme.py           # 配色 + QSS
 │   │   ├── widgets.py         # 通用控件：无边框窗口、单选卡片、拖放区、FlowLayout、侧栏
 │   │   ├── page_grid.py       # 页面缩略图网格（勾选 / 旋转 / 拖拽排序 / 异步渲染）
-│   │   ├── preview_panel.py   # 大图预览（缩放 / 平移）
+│   │   ├── preview_panel.py   # 大图预览（缩放 / 平移 / 画笔与文字批注）
 │   │   ├── split_page.py      # 页面编辑页
 │   │   └── main_window.py     # 主窗口 + Toast
 │   └── resources/             # 图标与勾选框贴图
-├── tests/test_engine.py       # 引擎自测（不需要界面）
+├── tests/
+│   ├── test_engine.py         # 引擎自测（不需要界面）
+│   └── test_features.py       # 图片导出 / 页码水印 / 拼接 / 压缩 / 批注
 ├── tools/
 │   ├── make_assets.py         # 生成图标与勾选框图片
 │   ├── shot.py                # 离屏截图（检查界面用）
@@ -133,7 +154,8 @@ E.export_pages([src], refs, mode="single", out_dir="out", prefix="摘录")
 ```bash
 pip install -r requirements.txt
 python tests/test_engine.py        # 13 项引擎自测
-python tools/shot.py 1400 900      # 离屏截图到 docs/screenshots/
+python tests/test_features.py      # 16 项新功能自测（图片导出 / 水印 / 拼接 / 压缩 / 批注）
+python tools/shot.py 1400 900      # 离屏截图到 build/shots/
 python tools/make_assets.py        # 重新生成图标 / 勾选框图片
 ```
 
